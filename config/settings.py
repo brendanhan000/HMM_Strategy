@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 DATA_CONFIG = {
     'symbol': 'SPY',
     'start_date': '2014-01-01',
-    'end_date': '2024-12-31',
+    'end_date': '2025-09-23',
     'train_ratio': 0.7,  # 70% for training, 30% for testing
 }
 

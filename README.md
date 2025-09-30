@@ -103,10 +103,13 @@ python main.py --mode backtest
 python main.py --mode predict
 
 # Custom parameters
-python main.py --symbol SPY --start-date 2020-01-01 --end-date 2024-12-31
+python main_with_predictions.py --symbol SPY --start-date 2020-01-01 --end-date 2025-09-23
 
 # Verbose output
 python main.py --verbose
+
+# Custom stock
+python main_with_predictions.py --symbol NVDA
 ```
 
 ### Programmatic Usage

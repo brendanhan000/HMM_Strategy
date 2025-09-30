@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import logging
 import warnings
+import argparse
 from datetime import datetime
 from typing import Dict, List
 
@@ -36,8 +37,9 @@ class PredictiveHMMTradingSystem:
     Complete HMM Trading System with Predictions and Visualizations
     """
 
-    def __init__(self):
-        self.data_loader = DataLoader()
+    def __init__(self, symbol: str = 'SPY'):
+        self.symbol = symbol
+        self.data_loader = DataLoader(symbol=symbol)
         self.garch_model = EnhancedGARCHModel()
         self.hmm_model = PerformanceOptimizedHMM()
         self.strategy = PerformanceOptimizedStrategy()
@@ -97,7 +99,7 @@ class PredictiveHMMTradingSystem:
         """Run historical performance analysis"""
         try:
             # Load data
-            logger.info("📈 Loading historical SPY data...")
+            logger.info(f"📈 Loading historical {self.symbol} data...")
             self.historical_data = self.data_loader.load_and_process()
             logger.info(f"✅ Loaded {len(self.historical_data)} observations "
                        f"({self.historical_data.index[0].date()} to {self.historical_data.index[-1].date()})")
@@ -138,7 +140,8 @@ class PredictiveHMMTradingSystem:
                 self.hmm_model,
                 self.garch_model,
                 self.historical_data.tail(252),  # Last year of data
-                self.historical_data['Close'].iloc[-1]
+                None,  # Let the predictor fetch current price
+                self.symbol  # Pass the symbol for current price lookup
             )
 
             self.predictions = predictions
@@ -182,6 +185,201 @@ class PredictiveHMMTradingSystem:
         except Exception as e:
             logger.error(f"❌ Error creating visualizations: {str(e)}")
             raise
+
+    def _generate_exit_signals(self, trading_signals: pd.DataFrame, current_state: Dict) -> pd.DataFrame:
+        """
+        Generate comprehensive exit signals and conditions
+        """
+        try:
+            logger.info("🚪 Generating enhanced exit signals...")
+
+            exit_signals = []
+
+            for i, (_, signal) in enumerate(trading_signals.iterrows()):
+                # Base exit conditions
+                exit_info = {
+                    'date': signal['date'],
+                    'regime': signal['regime'],
+                    'action': signal['action']
+                }
+
+                # 1. Regime Change Risk Assessment
+                if i > 0:
+                    prev_regime = trading_signals.iloc[i-1]['regime']
+                    if signal['regime'] != prev_regime:
+                        exit_info['regime_change_risk'] = 'HIGH - Regime transition detected'
+                        exit_info['exit_trigger'] = 'REGIME_CHANGE'
+                    elif signal['regime_confidence'] < 0.6:
+                        exit_info['regime_change_risk'] = 'MEDIUM - Low regime confidence'
+                    else:
+                        exit_info['regime_change_risk'] = 'LOW - Stable regime'
+
+                # 2. Position-specific exit triggers
+                position = signal['position']
+                if abs(position) > 2.0:  # High leverage
+                    exit_info['exit_trigger'] = 'HIGH_LEVERAGE_REVIEW'
+                    exit_info['hold_duration'] = 3  # Max 3 days for high leverage
+                elif abs(position) > 1.0:  # Medium leverage
+                    exit_info['hold_duration'] = 7  # Max 7 days
+                else:
+                    exit_info['hold_duration'] = 14  # Max 14 days for low leverage
+
+                # 3. Volatility-based exits
+                vol_forecast = signal['volatility_forecast']
+                if vol_forecast > 0.3:  # High volatility
+                    exit_info['volatility_exit'] = 'EXIT if vol > 35%'
+                    exit_info['exit_trigger'] = 'VOLATILITY_SPIKE'
+                elif vol_forecast > 0.25:
+                    exit_info['volatility_exit'] = 'REDUCE position if vol > 30%'
+                else:
+                    exit_info['volatility_exit'] = 'Normal volatility conditions'
+
+                # 4. Risk-based exits
+                risk_level = signal['risk_level']
+                if risk_level in ['Very High', 'High']:
+                    exit_info['exit_trigger'] = 'HIGH_RISK'
+                    exit_info['hold_duration'] = min(exit_info.get('hold_duration', 14), 2)
+
+                # 5. Trailing stop calculation
+                target_price = signal['target_price']
+                if position > 0:  # Long position
+                    # Trailing stop 3% below current high
+                    exit_info['trailing_stop'] = target_price * 0.97
+                    exit_info['trailing_stop_pct'] = '-3%'
+                elif position < 0:  # Short position
+                    # Trailing stop 3% above current low
+                    exit_info['trailing_stop'] = target_price * 1.03
+                    exit_info['trailing_stop_pct'] = '+3%'
+                else:  # No position
+                    exit_info['trailing_stop'] = target_price
+                    exit_info['trailing_stop_pct'] = 'N/A'
+
+                # 6. Signal strength-based exits
+                signal_strength = signal['signal_strength']
+                if signal_strength in ['Very Weak', 'Weak']:
+                    exit_info['exit_trigger'] = 'WEAK_SIGNAL'
+                    exit_info['hold_duration'] = 1  # Exit quickly on weak signals
+
+                # 7. Expected return-based exits
+                expected_return = signal['expected_return']
+                if abs(expected_return) < 0.005:  # Less than 0.5% expected
+                    exit_info['exit_trigger'] = 'LOW_EXPECTED_RETURN'
+                elif expected_return < -0.02:  # Expecting significant loss
+                    exit_info['exit_trigger'] = 'NEGATIVE_OUTLOOK'
+
+                # 8. Time-based exit rules
+                # Weekend approach (if approaching Friday)
+                if signal['date'].weekday() == 4:  # Friday
+                    exit_info['weekend_rule'] = 'CONSIDER_EXIT - Weekend approach'
+
+                # Month-end effects
+                if signal['date'].day >= 28:
+                    exit_info['month_end_rule'] = 'MONTH_END - Potential volatility'
+
+                exit_signals.append(exit_info)
+
+            exit_df = pd.DataFrame(exit_signals)
+
+            # Add comprehensive exit recommendations
+            exit_df['exit_recommendation'] = exit_df.apply(self._calculate_exit_recommendation, axis=1)
+
+            logger.info(f"✅ Generated exit signals for {len(exit_df)} trading days")
+
+            return exit_df
+
+        except Exception as e:
+            logger.error(f"❌ Error generating exit signals: {str(e)}")
+            return pd.DataFrame()
+
+    def _calculate_exit_recommendation(self, row) -> str:
+        """Calculate comprehensive exit recommendation"""
+        exit_triggers = []
+
+        # Collect all exit triggers
+        if row.get('exit_trigger'):
+            exit_triggers.append(row['exit_trigger'])
+
+        regime_risk = str(row.get('regime_change_risk', ''))
+        if regime_risk.startswith('HIGH'):
+            exit_triggers.append('REGIME_RISK')
+
+        volatility_exit = str(row.get('volatility_exit', ''))
+        if volatility_exit.startswith('EXIT'):
+            exit_triggers.append('VOL_SPIKE')
+
+        # Generate recommendation
+        if len(exit_triggers) >= 3:
+            return "🚨 IMMEDIATE EXIT RECOMMENDED"
+        elif len(exit_triggers) >= 2:
+            return "⚠️ CONSIDER EXIT - Multiple warnings"
+        elif len(exit_triggers) >= 1:
+            return "👀 MONITOR CLOSELY - Exit trigger present"
+        else:
+            return "✅ HOLD - No exit signals"
+
+    def _analyze_exit_recommendations(self, exit_signals: pd.DataFrame) -> Dict:
+        """Analyze exit recommendations and provide summary statistics"""
+        try:
+            analysis = {}
+
+            if exit_signals.empty:
+                return {
+                    'immediate_exits': 0,
+                    'consider_exits': 0,
+                    'monitor_days': 0,
+                    'safe_hold_days': 0,
+                    'exit_trigger_rate': 0.0,
+                    'high_risk_periods': []
+                }
+
+            # Count recommendation types
+            recommendations = exit_signals['exit_recommendation'].value_counts()
+            total_days = len(exit_signals)
+
+            analysis['immediate_exits'] = sum(1 for rec in exit_signals['exit_recommendation'] if '🚨 IMMEDIATE EXIT' in str(rec))
+            analysis['consider_exits'] = sum(1 for rec in exit_signals['exit_recommendation'] if '⚠️ CONSIDER EXIT' in str(rec))
+            analysis['monitor_days'] = sum(1 for rec in exit_signals['exit_recommendation'] if '👀 MONITOR CLOSELY' in str(rec))
+            analysis['safe_hold_days'] = sum(1 for rec in exit_signals['exit_recommendation'] if '✅ HOLD' in str(rec))
+
+            # Calculate exit trigger rate
+            days_with_triggers = total_days - analysis['safe_hold_days']
+            analysis['exit_trigger_rate'] = days_with_triggers / total_days if total_days > 0 else 0
+
+            # Identify high-risk periods
+            high_risk_periods = []
+            for _, row in exit_signals.iterrows():
+                if '🚨 IMMEDIATE EXIT' in str(row['exit_recommendation']):
+                    reason_parts = []
+                    if row.get('exit_trigger'):
+                        reason_parts.append(row['exit_trigger'])
+
+                    regime_risk = str(row.get('regime_change_risk', ''))
+                    if regime_risk.startswith('HIGH'):
+                        reason_parts.append('Regime Change')
+
+                    volatility_exit = str(row.get('volatility_exit', ''))
+                    if volatility_exit.startswith('EXIT'):
+                        reason_parts.append('Volatility Spike')
+
+                    high_risk_periods.append({
+                        'date': row['date'],
+                        'reason': ', '.join(reason_parts) if reason_parts else 'Multiple risk factors'
+                    })
+
+            analysis['high_risk_periods'] = high_risk_periods
+
+            return analysis
+
+        except Exception as e:
+            logger.error(f"❌ Error analyzing exit recommendations: {str(e)}")
+            return {
+                'immediate_exits': 0,
+                'consider_exits': 0,
+                'monitor_days': 0,
+                'safe_hold_days': 0,
+                'exit_trigger_rate': 0.0,
+                'high_risk_periods': []
+            }
 
     def _generate_complete_report(self, performance_results: Dict, predictions: Dict):
         """Generate comprehensive report"""
@@ -232,11 +430,16 @@ class PredictiveHMMTradingSystem:
                 print(f"   Current Price:     ${current_state['current_price']:.2f}")
                 print(f"   Volatility:        {current_state['current_volatility']:.1%}")
 
-                # Next 5 days detailed predictions
+                # Enhanced exit analysis
+                exit_signals = self._generate_exit_signals(trading_signals, current_state)
+
+                # Next 5 days detailed predictions with exit conditions
                 print(f"\n📅 NEXT 5 TRADING DAYS DETAILED OUTLOOK:")
                 next_5_days = trading_signals.head(5)
 
                 for i, (_, signal) in enumerate(next_5_days.iterrows(), 1):
+                    exit_info = exit_signals.iloc[i-1] if i <= len(exit_signals) else {}
+
                     print(f"\n   Day {i} ({signal['date'].strftime('%Y-%m-%d')}):")
                     print(f"      Action:         {signal['action']} ({signal['signal_strength']})")
                     print(f"      Regime:         {signal['regime']} (Confidence: {signal['regime_confidence']:.1%})")
@@ -246,6 +449,26 @@ class PredictiveHMMTradingSystem:
                     print(f"      Position Size:  {signal['position']:.1f}x")
                     print(f"      Stop Loss:      ${signal['stop_loss']:.2f}")
                     print(f"      Take Profit:    ${signal['take_profit']:.2f}")
+
+                    # Add exit conditions
+                    if exit_info:
+                        print(f"      EXIT CONDITIONS:")
+                        if exit_info.get('exit_recommendation'):
+                            print(f"         • Overall Recommendation: {exit_info['exit_recommendation']}")
+                        if exit_info.get('regime_change_risk'):
+                            print(f"         • Regime Change Risk: {exit_info['regime_change_risk']}")
+                        if exit_info.get('exit_trigger'):
+                            print(f"         • Exit Trigger: {exit_info['exit_trigger']}")
+                        if exit_info.get('hold_duration'):
+                            print(f"         • Max Hold Duration: {exit_info['hold_duration']} days")
+                        if exit_info.get('trailing_stop'):
+                            print(f"         • Trailing Stop: ${exit_info['trailing_stop']:.2f}")
+                        if exit_info.get('volatility_exit'):
+                            print(f"         • Vol-based Exit: {exit_info['volatility_exit']}")
+                        if exit_info.get('weekend_rule'):
+                            print(f"         • Weekend Rule: {exit_info['weekend_rule']}")
+                        if exit_info.get('month_end_rule'):
+                            print(f"         • Month-End Rule: {exit_info['month_end_rule']}")
 
                 # Overall outlook
                 strong_signals = trading_signals[trading_signals['signal_strength'].isin(['Strong', 'Very Strong'])]
@@ -269,6 +492,20 @@ class PredictiveHMMTradingSystem:
                 if low_confidence_days > 0:
                     print(f"   • {low_confidence_days} low-confidence prediction days")
 
+                # Exit Strategy Summary
+                exit_analysis = self._analyze_exit_recommendations(exit_signals)
+                print(f"\n🚪 EXIT STRATEGY OVERVIEW:")
+                print(f"   Immediate Exits:     {exit_analysis['immediate_exits']} days")
+                print(f"   Consider Exits:      {exit_analysis['consider_exits']} days")
+                print(f"   Monitor Closely:     {exit_analysis['monitor_days']} days")
+                print(f"   Safe Hold Days:      {exit_analysis['safe_hold_days']} days")
+                print(f"   Exit Trigger Rate:   {exit_analysis['exit_trigger_rate']:.1%}")
+
+                if exit_analysis['high_risk_periods']:
+                    print(f"\n🚨 HIGH-RISK EXIT PERIODS:")
+                    for period in exit_analysis['high_risk_periods'][:3]:  # Show top 3
+                        print(f"   • {period['date'].strftime('%Y-%m-%d')}: {period['reason']}")
+
             # Visualization Files
             if self.visualizations:
                 print(f"\n📊 VISUALIZATION FILES CREATED:")
@@ -279,6 +516,36 @@ class PredictiveHMMTradingSystem:
                 print(f"   • Open HTML files in web browser for interactive charts")
                 print(f"   • PNG files can be used for reports and presentations")
                 print(f"   • Text summary contains detailed prediction analysis")
+
+                # Exit Strategy Guide
+                print(f"\n🚪 COMPREHENSIVE EXIT STRATEGY GUIDE:")
+                print(f"   📋 Exit Signal Priority (Immediate Action Required):")
+                print(f"      1. 🚨 IMMEDIATE EXIT: Multiple risk factors present")
+                print(f"      2. ⚠️  CONSIDER EXIT: 2+ warnings detected")
+                print(f"      3. 👀 MONITOR CLOSELY: 1 exit trigger active")
+                print(f"      4. ✅ HOLD: No exit signals detected")
+
+                print(f"\n   🎯 Exit Trigger Types:")
+                print(f"      • REGIME_CHANGE: Market regime transition detected")
+                print(f"      • VOLATILITY_SPIKE: Volatility exceeds 30-35%")
+                print(f"      • HIGH_LEVERAGE_REVIEW: Position size > 2x")
+                print(f"      • HIGH_RISK: Risk level marked as High/Very High")
+                print(f"      • WEAK_SIGNAL: Signal strength is Weak/Very Weak")
+                print(f"      • LOW_EXPECTED_RETURN: Expected return < 0.5%")
+                print(f"      • NEGATIVE_OUTLOOK: Expecting significant losses")
+
+                print(f"\n   ⏰ Time-Based Rules:")
+                print(f"      • High Leverage (>2x): Hold max 3 days")
+                print(f"      • Medium Leverage (1-2x): Hold max 7 days")
+                print(f"      • Low Leverage (<1x): Hold max 14 days")
+                print(f"      • Weekend Approach: Consider exit on Fridays")
+                print(f"      • Month-End: Increased volatility expected")
+
+                print(f"\n   💰 Risk Management:")
+                print(f"      • Trailing Stop: 3% from current high/low")
+                print(f"      • Static Stop Loss: Individual per position")
+                print(f"      • Take Profit: 2x expected return or 3% minimum")
+                print(f"      • Position Sizing: Adjusted by volatility & confidence")
 
             # Success Summary
             success_indicators = []
@@ -309,33 +576,70 @@ class PredictiveHMMTradingSystem:
             logger.error(f"❌ Error generating report: {str(e)}")
 
 
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        description='🔮 Predictive HMM Trading System - Advanced Market Regime Analysis',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python main_with_predictions.py                    # Default SPY analysis
+  python main_with_predictions.py --symbol PLTR      # Palantir analysis
+  python main_with_predictions.py --symbol AAPL      # Apple analysis
+  python main_with_predictions.py --symbol QQQ       # QQQ ETF analysis
+        """
+    )
+
+    parser.add_argument(
+        '--symbol', '-s',
+        type=str,
+        default='SPY',
+        help='Stock symbol to analyze (default: SPY)'
+    )
+
+    parser.add_argument(
+        '--forecast-horizon', '-f',
+        type=int,
+        default=30,
+        help='Number of days to forecast (default: 30)'
+    )
+
+    return parser.parse_args()
+
 def main():
     """Main execution function"""
-    print("""
+    # Parse command line arguments
+    args = parse_arguments()
+
+    print(f"""
 ╔════════════════════════════════════════════════════════════════════════════════╗
-║                   🔮 PREDICTIVE HMM TRADING SYSTEM                             ║
+║                   🔮 PREDICTIVE HMM TRADING SYSTEM                           ║
 ║                                                                                ║
-║  🚀 Complete System Features:                                                  ║
-║  • Historical Performance Analysis (>30% return, >1.5 Sharpe targets)          ║
-║  • 30-Day Future Market Predictions                                            ║
-║  • Advanced Interactive Visualizations                                         ║
-║  • Actionable Trading Signals with Entry/Exit Points                           ║
+║  📈 Analyzing Symbol: {args.symbol:<10}                                        ║
+║  📅 Forecast Horizon: {args.forecast_horizon} days                                        ║
 ║                                                                                ║
-║  📊 Outputs:                                                                   ║
-║  • Interactive HTML dashboards                                                 ║
-║  • Static PNG charts for reports                                               ║
-║  • Detailed prediction summaries                                               ║
-║  • Trading signals with risk management                                        ║
+║  🚀 Complete System Features:                                                 ║
+║  • Historical Performance Analysis (>30% return, >1.5 Sharpe targets)        ║
+║  • {args.forecast_horizon}-Day Future Market Predictions                                           ║
+║  • Advanced Interactive Visualizations                                        ║
+║  • Actionable Trading Signals with Entry/Exit Points                         ║
+║                                                                                ║
+║  📊 Outputs:                                                                  ║
+║  • Interactive HTML dashboards                                                ║
+║  • Static PNG charts for reports                                              ║
+║  • Detailed prediction summaries                                              ║
+║  • Trading signals with risk management                                       ║
 ║                                                                                ║
 ║  🤖 Generated with Claude Code                                                 ║
 ╚════════════════════════════════════════════════════════════════════════════════╝
     """)
 
     try:
-        system = PredictiveHMMTradingSystem()
+        system = PredictiveHMMTradingSystem(symbol=args.symbol)
+        system.predictor = AdvancedPredictor(forecast_horizon=args.forecast_horizon)
         results = system.run_complete_analysis()
 
-        print(f"\n🎉 SUCCESS! Complete analysis finished.")
+        print(f"\n🎉 SUCCESS! Complete analysis finished for {args.symbol}.")
         print(f"📁 Check current directory for visualization files:")
         print(f"   • Interactive dashboards (.html)")
         print(f"   • Static charts (.png)")
@@ -345,7 +649,7 @@ def main():
 
     except Exception as e:
         logger.error(f"💥 SYSTEM ERROR: {str(e)}")
-        print(f"\n❌ Analysis failed: {str(e)}")
+        print(f"\n❌ Analysis failed for {args.symbol}: {str(e)}")
         return None
 
 
